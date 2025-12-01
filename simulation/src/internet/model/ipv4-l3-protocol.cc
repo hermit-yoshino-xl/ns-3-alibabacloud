@@ -43,6 +43,7 @@
 #include "icmpv4-l4-protocol.h"
 #include "ipv4-interface.h"
 #include "ipv4-raw-socket-impl.h"
+#include "marc-header.h"
 
 namespace ns3 {
 
@@ -1057,6 +1058,59 @@ void
 Ipv4L3Protocol::IpForward (Ptr<Ipv4Route> rtentry, Ptr<const Packet> p, const Ipv4Header &header)
 {
   NS_LOG_FUNCTION (this << rtentry << p << header);
+  // ================= MARC HOOK START (Step 3: Replication) =================
+  MarcHeader marcHeader;
+  if (p->PeekHeader (marcHeader))
+    {
+      NS_LOG_UNCOND (" [MARC-SWITCH] Replicating Packet! Node=" << m_node->GetId()
+                     << " Prefix=" << marcHeader.GetPrefix());
+
+      // 遍历节点上的所有接口 (模拟 MARC 硬件的端口位图匹配)
+      for (uint32_t i = 0; i < GetNInterfaces (); i++)
+        {
+          Ptr<Ipv4Interface> outInterface = GetInterface (i);
+          Ptr<NetDevice> outDevice = outInterface->GetDevice ();
+
+          // 1. 跳过回环接口 (Loopback)，防止发给自己
+          if (DynamicCast<LoopbackNetDevice> (outDevice))
+            continue;
+
+          // 2. 简单的水平分割 (Split Horizon)
+          // 如果出接口就是入接口（通过路由表推断），通常应该跳过防止环路。
+          // 但在当前简单测试中，我们允许向所有物理接口泛洪，以证明复制能力。
+          if (outDevice == rtentry->GetOutputDevice()) 
+          {
+             // 这是一个优化：原定的单播路由出口肯定是要发的，但我们下面统一处理
+          }
+
+          // 3. 复制数据包 (Clone the packet)
+          // NS-3 的 Packet 是写时复制的，Copy() 开销很小
+          Ptr<Packet> clone = p->Copy ();
+
+          // 4. 处理 IP 头 (TTL - 1)
+          Ipv4Header newHeader = header;
+          newHeader.SetTtl (header.GetTtl () - 1);
+          if (newHeader.GetTtl () == 0) continue; // TTL 耗尽
+
+          // 5. 计算校验和 (如果开启)
+          if (Node::ChecksumEnabled ())
+          {
+            newHeader.EnableChecksum ();
+          }
+
+          // 6. 发送！
+          // 我们直接调用接口的 Send 方法，绕过单播路由查找
+          NS_LOG_UNCOND ("    -> Cloning and Sending to Interface Index " << i);
+          outInterface->Send (clone, newHeader, newHeader.GetDestination ());
+        }
+
+      // 【关键】必须 Return！
+      // 我们的复制逻辑已经接管了转发，不能再让代码往下走去执行默认的单播转发了
+      // 否则目的地会收到两份数据（一份来自 MARC 复制，一份来自 IP 单播）
+      return; 
+    }
+  // ================= MARC HOOK END =================
+
   NS_LOG_LOGIC ("Forwarding logic for node: " << m_node->GetId ());
   // Forwarding
   Ipv4Header ipHeader = header;
@@ -1090,7 +1144,6 @@ Ipv4L3Protocol::IpForward (Ptr<Ipv4Route> rtentry, Ptr<const Packet> p, const Ip
   m_unicastForwardTrace (ipHeader, packet, interface);
   SendRealOut (rtentry, packet, ipHeader);
 }
-
 void
 Ipv4L3Protocol::LocalDeliver (Ptr<const Packet> packet, Ipv4Header const&ip, uint32_t iif)
 {
