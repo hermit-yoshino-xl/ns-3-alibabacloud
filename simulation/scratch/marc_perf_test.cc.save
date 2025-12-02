@@ -1,0 +1,108 @@
+/* marc_perf_test.cc - Final Robust Version */
+#include "ns3/core-module.h"
+#include "ns3/network-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/csma-module.h"
+#include "ns3/applications-module.h"
+#include "ns3/marc-header.h"
+
+using namespace ns3;
+
+NS_LOG_COMPONENT_DEFINE ("MarcPerfTest");
+
+uint64_t g_receivedBytes = 0;
+Time g_startTime;
+Time g_lastRxTime;
+
+void ReceivePacket (Ptr<Socket> socket)
+{
+  Ptr<Packet> packet;
+  Address from;
+  while ((packet = socket->RecvFrom (from)))
+    {
+      if (packet->GetSize () > 0)
+        {
+          g_receivedBytes += packet->GetSize ();
+          g_lastRxTime = Simulator::Now ();
+        }
+    }
+}
+
+const uint32_t PACKET_SIZE = 1000; 
+
+double RunBaselineTest (uint32_t totalDataSize, uint32_t numReceivers)
+{
+  g_receivedBytes = 0;
+  g_lastRxTime = Seconds(0);
+  uint32_t numPackets = totalDataSize / PACKET_SIZE;
+  if (numPackets == 0) numPackets = 1;
+
+  NodeContainer nodes;
+  nodes.Create (numReceivers + 1);
+  CsmaHelper csma;
+  csma.SetChannelAttribute ("DataRate", StringValue ("100Gbps"));
+  csma.SetChannelAttribute ("Delay", StringValue ("1us"));
+  NetDeviceContainer devices = csma.Install (nodes);
+  InternetStackHelper stack;
+  stack.Install (nodes);
+  Ipv4AddressHelper address;
+  address.SetBase ("10.1.1.0", "255.255.255.0");
+  Ipv4InterfaceContainer interfaces = address.Assign (devices);
+
+  for (uint32_t i = 1; i <= numReceivers; ++i) {
+      Ptr<Socket> sink = Socket::CreateSocket (nodes.Get (i), TypeId::LookupByName ("ns3::UdpSocketFactory"));
+      InetSocketAddress local = InetSocketAddress (Ipv4Address::GetAny (), 8080);
+      sink->Bind (local);
+      sink->SetRecvCallback (MakeCallback (&ReceivePacket));
+  }
+
+  Ptr<Socket> source = Socket::CreateSocket (nodes.Get (0), TypeId::LookupByName ("ns3::UdpSocketFactory"));
+  g_startTime = Seconds (1.0);
+  
+  for (uint32_t r = 1; r <= numReceivers; ++r) {
+      for (uint32_t p_idx = 0; p_idx < numPackets; ++p_idx) {
+          Time t = Seconds(1.0) + MicroSeconds(1) * (r * numPackets + p_idx);
+          Simulator::Schedule (t, [=]() {
+              Ptr<Packet> p = Create<Packet> (PACKET_SIZE);
+              source->SendTo (p, 0, InetSocketAddress (interfaces.GetAddress (r), 8080));
+          });
+      }
+  }
+  Simulator::Run ();
+  Simulator::Destroy ();
+  if (g_lastRxTime < g_startTime) return 0;
+  return (g_lastRxTime - g_startTime).GetSeconds();
+}
+
+double RunMarcTest (uint32_t totalDataSize, uint32_t numReceivers)
+{
+  g_receivedBytes = 0;
+  g_lastRxTime = Seconds(0);
+  uint32_t numPackets = totalDataSize / PACKET_SIZE;
+  if (numPackets == 0) numPackets = 1;
+
+  NodeContainer nodes;
+  nodes.Create (numReceivers + 1); 
+  CsmaHelper csma;
+  csma.SetChannelAttribute ("DataRate", StringValue ("100Gbps"));
+  csma.SetChannelAttribute ("Delay", StringValue ("1us"));
+  NetDeviceContainer devices = csma.Install (nodes);
+  InternetStackHelper stack;
+  stack.Install (nodes);
+  Ipv4AddressHelper address;
+  address.SetBase ("10.1.1.0", "255.255.255.0");
+  Ipv4InterfaceContainer interfaces = address.Assign (devices);
+
+  for (uint32_t i = 1; i <= numReceivers; ++i) {
+      Ptr<Socket> sink = Socket::CreateSocket (nodes.Get (i), TypeId::LookupByName ("ns3::UdpSocketFactory"));
+      InetSocketAddress local = InetSocketAddress (Ipv4Address::GetAny (), 8080);
+      sink->Bind (local);
+      sink->SetRecvCallback (MakeCallback (&ReceivePacket));
+  }
+
+  Ptr<Socket> source = Socket::CreateSocket (nodes.Get (0), TypeId::LookupByName ("ns3::UdpSocketFactory"));
+  g_startTime = Seconds (1.0);
+
+  for (uint32_t p_idx = 0;
+
+
